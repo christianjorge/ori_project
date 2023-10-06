@@ -1,21 +1,27 @@
 const express = require('express');
-const fs = require('fs-extra');
+const fs = require('fs-extra'); //Biblioteca para trabalhar com diretórios.
 const path = require('path');
 const app = express();
-const stripHtmlTags = require('strip-html-tags');
+const stripHtmlTags = require('strip-html-tags'); //Biblioteca pra remover tags html.
 const he = require('he');
-const cors = require('cors');
+const cors = require('cors'); //Para evitar problema de requisição para o mesmo localhost.
+const stopwordsPt = require('stopwords-pt'); //Biblioteca pra remover stop words.
+const natural = require('natural'); //Biblioteca para radicalizar palavras
+const stemmerRslp = natural.PorterStemmerPt;
 
 const directoryPath = './uteis'; // Substitua pelo caminho do diretório contendo os arquivos .htm
 
 app.use(cors());
+
+// Crie um stemmer RSLP
+
 
 app.get('/indexador', async (req, res) => {
   try {
     const wordFrequencyArray = [];
 
     const files = await fs.readdir(directoryPath);
-
+    
     for (const file of files) {
       if (path.extname(file) === '.htm') {
         const content = await fs.readFile(path.join(directoryPath, file), 'utf-8');
@@ -23,13 +29,23 @@ app.get('/indexador', async (req, res) => {
         const words = textoSemHTML.split(/\s+/);
 
         words.forEach((word) => {
-          const cleanedWord = normalizarString(word);
-          if (cleanedWord.length > 2) {
-            const existingWord = wordFrequencyArray.find((item) => item.word === cleanedWord);
-            if (existingWord) {
-              existingWord.frequency += 1;
-            } else {
-              wordFrequencyArray.push({ word: cleanedWord, frequency: 1 });
+          // Remove stopwords
+          if (!stopwordsPt.includes(word.toLowerCase())) {
+            // Limpa a palavra
+            const cleanedWord = normalizarString(word);
+            // Verifica se o tamanho é maior que 2
+            if (cleanedWord.length > 2) {
+              // Aplicar o RSLP Stemmer à palavra
+              const stemmedWord = stemmerRslp.stem(cleanedWord);
+        
+              // Verifica se a palavra radicalizada já existe no array resultante, caso sim, soma a frequência.
+              const existingWord = wordFrequencyArray.find((item) => item.word === stemmedWord);
+        
+              if (existingWord) {
+                existingWord.frequency += 1;
+              } else {
+                wordFrequencyArray.push({ word: stemmedWord, frequency: 1 });
+              }
             }
           }
         });
