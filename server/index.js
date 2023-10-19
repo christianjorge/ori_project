@@ -103,7 +103,7 @@ app.get('/pesquisarposicional', async (req, res) => {
       // Configurar o operador atual com base na consulta
       currentOperator = term;
     } else {
-      if (term.startsWith('/')) {
+      if (term.startsWith('/')) { //Consulta posicional
         
         // Processar pesquisa posicional
         const [proximity, nextTerm] = term.split('/');
