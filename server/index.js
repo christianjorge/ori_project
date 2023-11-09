@@ -15,6 +15,7 @@ const invertedIndex = {};
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'uteis')));
 
 // Função para normalizar uma string (mesma função do código original)
 function normalizarString(texto) {
@@ -382,6 +383,190 @@ app.get('/indexador', async (req, res) => {
     res.status(500).json({ error: 'Ocorreu um erro ao contar as palavras.' });
   }
 });
+
+app.get('/gerarmatriz', async (req, res) => {
+
+  // Estrutura para manter a matriz documentos-termos
+  const documentosTermos = {};
+
+  const files = await fs.readdir(directoryPath);
+
+  for (const file of files) {
+    if (path.extname(file) === '.htm') {
+      const content = await fs.readFile(path.join(directoryPath, file), 'utf-8');
+      const textoSemHTML = he.decode(stripHtmlTags(content));
+      const words = textoSemHTML.split(/\s+/);
+
+      // Crie um conjunto para manter o controle das palavras únicas no documento
+      const termosUnicos = new Set();
+
+      words.forEach((word) => {
+        const cleanedWord = normalizarString(word);
+        
+        if (!stopwordsPt.includes(cleanedWord.toLowerCase()) && cleanedWord.length > 2) {
+          const stemmedWord = stemmerRslp.stem(cleanedWord);
+
+          // Mantenha o controle da frequência de ocorrência do termo no documento
+          if (!documentosTermos[file]) {
+            documentosTermos[file] = {};
+          }
+
+          if (!documentosTermos[file][stemmedWord]) {
+            documentosTermos[file][stemmedWord] = 1;
+          } else {
+            documentosTermos[file][stemmedWord]++;
+          }
+
+          // Adicione o termo ao conjunto de termos únicos no documento
+          termosUnicos.add(stemmedWord);
+        }
+      });
+
+      // Atualize o vocabulário com termos únicos no documento
+      termosUnicos.forEach((term) => {
+        if (!invertedIndex[term]) {
+          invertedIndex[term] = [];
+        }
+        if (!invertedIndex[term].includes(file)) {
+          invertedIndex[term].push(file);
+        }
+      });
+    }
+  }
+
+  // Neste ponto temos a matriz documentos-termos representada por "documentosTermos".
+
+  // Calcular os pesos dos termos usando TF-IDF
+  const pesosDocumentosTermos = {};
+  const totalDocumentos = Object.keys(documentosTermos).length;
+
+  for (const documento in documentosTermos) {
+    pesosDocumentosTermos[documento] = {};
+    const totalTermosDocumento = Object.values(documentosTermos[documento]).reduce((acc, freq) => acc + freq, 0);
+
+    for (const termo in documentosTermos[documento]) {
+      //Aplica fórmula matemática do TF e em seguida do IDF
+      const tf = documentosTermos[documento][termo] / totalTermosDocumento;
+      const documentosComTermo = Object.keys(invertedIndex[termo]).length;
+      const idf = Math.log(totalDocumentos / (documentosComTermo + 1)); // +1 para evitar divisão por zero
+
+      pesosDocumentosTermos[documento][termo] = tf * idf;
+    }
+  }
+
+  // Construir a matriz de documentos-termos com os pesos TF-IDF
+  const matrizDocumentosTermosTFIDF = {};
+
+  for (const documento in documentosTermos) {
+    for (const termo in documentosTermos[documento]) {
+      if (!matrizDocumentosTermosTFIDF[termo]) {
+        matrizDocumentosTermosTFIDF[termo] = {};
+      }
+      matrizDocumentosTermosTFIDF[termo][documento] = pesosDocumentosTermos[documento][termo];
+    }
+  }
+
+  // Neste ponto, você tem a matriz de documentos-termos representada por "matrizDocumentosTermosTFIDF" com os pesos TF-IDF.
+  res.json(matrizDocumentosTermosTFIDF);
+  salvarJSONTemporario(matrizDocumentosTermosTFIDF, 'matrizVetorial.json');
+});
+
+async function carregarMatriz() {
+  try {
+    const indexPath = './arquivos/matrizVetorial.json';
+    if (await fs.pathExists(indexPath)) {
+      const jsonData = await fs.readFile(indexPath, 'utf-8');
+      return JSON.parse(jsonData);
+    } else {
+      console.log('O arquivo não existe. Execute a rota /gerarmatriz primeiro.');
+      return {};
+    }
+  } catch (error) {
+    console.error('Erro ao carregar a matriz:', error);
+    return {};
+  }
+}
+
+app.get('/pesquisarvetorial', async (req, res) => {
+  const { query } = req.query;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Parâmetros de consulta ausentes.' });
+  }
+
+  // Carregar a matriz do arquivo JSON
+  const matrizDocumentosTermos = await carregarMatriz();
+
+  const queryTerms = query.split(/\s+/);
+
+  // Calcular o vetor de consulta
+  const queryVector = {};
+  const totalDocumentos = Object.keys(matrizDocumentosTermos).length;
+
+  for (const term of queryTerms) {
+    const termStemmed = stemmerRslp.stem(normalizarString(term)).toLowerCase();
+
+    if (matrizDocumentosTermos[termStemmed]) {
+      const documentosComTermo = Object.keys(matrizDocumentosTermos[termStemmed]).length;
+      const idf = Math.log(totalDocumentos / (documentosComTermo + 1)); // +1 para evitar divisão por zero
+      queryVector[termStemmed] = 1 * idf; // Supomos que a frequência na consulta é 1
+    }
+  }
+
+  // Calcular a similaridade cosseno entre a consulta e todos os documentos
+  const resultados = [];
+
+  // Função para calcular o produto escalar entre dois vetores
+  function dotProduct(vectorA, vectorB) {
+    let product = 0;
+    for (const termA in vectorA) {
+      if (vectorB[termA]) {
+        product += vectorA[termA] * vectorB[termA];
+      }
+    }
+    return product;
+  }
+
+  // Função para calcular a norma de um vetor
+  function calculateNorm(vector) {
+    let sumOfSquares = 0;
+    for (const term in vector) {
+      sumOfSquares += vector[term] ** 2;
+    }
+    return Math.sqrt(sumOfSquares);
+  }
+
+  const queryNorm = calculateNorm(queryVector);
+  // Antes de calcular a similaridade, transponha a matriz
+  const matrizDocumentosTermosTransposta = {};
+
+  for (const termo in matrizDocumentosTermos) {
+    for (const documento in matrizDocumentosTermos[termo]) {
+      if (!matrizDocumentosTermosTransposta[documento]) {
+        matrizDocumentosTermosTransposta[documento] = {};
+      }
+      matrizDocumentosTermosTransposta[documento][termo] = matrizDocumentosTermos[termo][documento];
+    }
+  }
+
+  // Agora você pode calcular a similaridade
+  for (const documento in matrizDocumentosTermosTransposta) {
+    const documentoVector = matrizDocumentosTermosTransposta[documento];
+    const dot = dotProduct(queryVector, documentoVector);
+    const documentNorm = calculateNorm(documentoVector);
+
+    // Calcular a similaridade cosseno aplicando a fórmula matemática
+    const similarity = dot / (queryNorm * documentNorm);
+
+    resultados.push({ documento: documento, similarity: similarity });
+  }
+
+  // Última etapa: classificar os resultados por ordem decrescente de similaridade
+  resultados.sort((a, b) => b.similarity - a.similarity);
+
+  res.json(resultados);
+});
+
 
 const PORT = 3001;
 app.listen(PORT, () => {
